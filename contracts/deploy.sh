@@ -135,6 +135,13 @@ else
     echo -e "${YELLOW}Note: contract optimize not available, skipping${NC}"
 fi
 
+# Step 3.5: Compute expected WASM hash
+echo -e "\n${YELLOW}Step 3.5: Computing WASM hash...${NC}"
+
+EXPECTED_WASM_HASH=$(sha256sum "$WASM_FILE" | awk '{print $1}')
+echo "Expected WASM hash: $EXPECTED_WASM_HASH"
+echo -e "${GREEN}✓ WASM hash computed${NC}"
+
 # Step 4: Deploy to Stellar Network
 echo -e "\n${YELLOW}Step 4: Deploying to $NETWORK...${NC}"
 
@@ -178,6 +185,31 @@ fi
 echo -e "${GREEN}✓ Contract deployed successfully${NC}"
 echo "Contract ID: $CONTRACT_ID"
 
+# Step 4.5: Verify WASM hash
+echo -e "\n${YELLOW}Step 4.5: Verifying WASM hash...${NC}"
+
+# Fetch the contract's ledger entry to get the WASM hash
+DEPLOYED_WASM_HASH=$($SOROBAN_CLI contract info --id "$CONTRACT_ID" --network "$NETWORK" 2>/dev/null | grep -i "wasm_hash\|hash" | head -1 | awk -F': ' '{print $2}' || true)
+
+if [ -z "$DEPLOYED_WASM_HASH" ]; then
+    echo -e "${YELLOW}Note: Could not fetch deployed WASM hash from network. Verify manually.${NC}"
+    echo "Expected WASM hash: $EXPECTED_WASM_HASH"
+else
+    # Normalize hashes (remove 0x prefix if present and convert to lowercase)
+    EXPECTED_NORMALIZED=$(echo "$EXPECTED_WASM_HASH" | tr '[:upper:]' '[:lower:]' | sed 's/^0x//')
+    DEPLOYED_NORMALIZED=$(echo "$DEPLOYED_WASM_HASH" | tr '[:upper:]' '[:lower:]' | sed 's/^0x//')
+    
+    if [ "$EXPECTED_NORMALIZED" = "$DEPLOYED_NORMALIZED" ]; then
+        echo -e "${GREEN}✓ WASM hash verified: $EXPECTED_WASM_HASH${NC}"
+    else
+        echo -e "${RED}Error: WASM hash mismatch!${NC}"
+        echo "Expected: $EXPECTED_NORMALIZED"
+        echo "Deployed: $DEPLOYED_NORMALIZED"
+        echo "This may indicate a supply chain attack or compilation issue."
+        exit 1
+    fi
+fi
+
 # Step 5: Save deployment info
 echo -e "\n${YELLOW}Step 5: Saving deployment info...${NC}"
 
@@ -191,11 +223,16 @@ cat > "$DEPLOYMENT_FILE" << EOF
   "deployed_at": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
   "rpc_host": "$SOROBAN_RPC_HOST",
   "network_passphrase": "$SOROBAN_NETWORK_PASSPHRASE",
-  "wasm_hash": "$(sha256sum "$WASM_FILE" | awk '{print $1}')"
+  "wasm_hash": "$EXPECTED_WASM_HASH"
 }
 EOF
 
 echo -e "${GREEN}✓ Deployment info saved to $DEPLOYMENT_FILE${NC}"
+
+# Step 5a: Store expected WASM hash for future verification
+EXPECTED_HASH_FILE="${CONTRACT_DIR}/${CONTRACT_SUBDIR}/expected_hash.txt"
+echo "$EXPECTED_WASM_HASH" > "$EXPECTED_HASH_FILE"
+echo -e "${GREEN}✓ Expected WASM hash stored to $EXPECTED_HASH_FILE${NC}"
 
 # Step 5b: Write contract ID to .deployed_ids.env for backend configuration
 DEPLOYED_IDS_FILE="${CONTRACT_DIR}/.deployed_ids.env"

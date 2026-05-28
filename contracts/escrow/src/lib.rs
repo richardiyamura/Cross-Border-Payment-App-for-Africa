@@ -66,6 +66,14 @@ pub struct FeesWithdrawn {
 
 #[derive(Clone)]
 #[contracttype]
+pub struct FeeUpdated {
+    pub escrow_id: u64,
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
+#[derive(Clone)]
+#[contracttype]
 pub struct Escrow {
     pub id: u64,
     pub sender: Address,
@@ -592,6 +600,58 @@ impl EscrowContract {
             FeesWithdrawn {
                 admin: admin.clone(),
                 amount,
+            },
+        );
+    }
+
+    /// Update the fee for an escrow. Only the contract admin can call this.
+    ///
+    /// The escrow must be in Pending status. Emits a FeeUpdated event with the
+    /// old and new fee values.
+    ///
+    /// # Arguments
+    /// * `admin`       — Must match the admin set during `initialize`.
+    /// * `escrow_id`   — ID of the escrow to update.
+    /// * `new_fee_bps` — New fee in basis points (0–5000).
+    pub fn update_fee(env: Env, admin: Address, escrow_id: u64, new_fee_bps: u32) {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized");
+
+        if admin != stored_admin {
+            panic!("Only admin can update escrow fees");
+        }
+
+        if new_fee_bps > MAX_FEE_BPS {
+            panic!("New fee exceeds maximum of 5000 bps (50%)");
+        }
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("Escrow {} not found", escrow_id));
+
+        if escrow.status != EscrowStatus::Pending {
+            panic!("Escrow is not in pending state");
+        }
+
+        let old_fee_bps = escrow.release_fee_bps;
+        escrow.release_fee_bps = new_fee_bps;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events().publish(
+            (Symbol::new(&env, "FeeUpdated"),),
+            FeeUpdated {
+                escrow_id,
+                old_fee_bps,
+                new_fee_bps,
             },
         );
     }
