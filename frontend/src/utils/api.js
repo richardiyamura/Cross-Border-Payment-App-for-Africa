@@ -75,6 +75,20 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+api.interceptors.request.use(
+  (config) => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return Promise.reject({
+        isOfflineError: true,
+        message: 'No internet connection',
+        config,
+      });
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
 /**
  * Offline payment interceptor
  *
@@ -113,6 +127,14 @@ api.interceptors.response.use(
             'You are offline. Your payment has been queued and will be sent automatically when your connection is restored.',
         },
         status: 202,
+        config: err.config,
+      });
+    }
+
+    if (!err.response && typeof navigator !== 'undefined' && !navigator.onLine) {
+      return Promise.reject({
+        isOfflineError: true,
+        message: 'No internet connection',
         config: err.config,
       });
     }
