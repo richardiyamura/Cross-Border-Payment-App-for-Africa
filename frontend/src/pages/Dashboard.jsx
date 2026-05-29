@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import PINSetupModal from '../components/PINSetupModal';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import { getQueueCount } from '../utils/offlineDB';
 
 const IS_TESTNET = process.env.REACT_APP_STELLAR_NETWORK !== 'mainnet';
 const MAX_WALLETS = 5;
@@ -97,6 +98,7 @@ export default function Dashboard() {
   const [balanceIncreased, setBalanceIncreased] = useState(false);
   const [fromCache, setFromCache] = useState(false);
   const [showZeroBalances, setShowZeroBalances] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
   const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
   const { isOnline } = useOnlineStatus();
 
@@ -200,7 +202,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadDashboard();
-  }, [loadDashboard]);
+    if (!isOnline) {
+      getQueueCount().then(setQueueCount).catch(() => {});
+    }
+  }, [loadDashboard, isOnline]);
 
   const copyAddress = () => {
     navigator.clipboard.writeText(wallet?.public_key || '');
@@ -278,29 +283,10 @@ export default function Dashboard() {
       ? selectedAssetBalance
       : convertFromXLM(xlmBalance, selectedCurrency);
 
-  const { pullDistance, refreshing, onTouchStart, onTouchMove, onTouchEnd } = usePullToRefresh(loadDashboard);
+  const { pullDistance, refreshing: pullRefreshing, onTouchStart, onTouchMove, onTouchEnd } = usePullToRefresh(loadDashboard);
 
-  if (loading)
-    return (
-      <div className="px-4 py-6 max-w-lg mx-auto space-y-6" aria-busy="true" aria-label="Loading dashboard">
-        <div className="flex items-center justify-between">
-          <div className="space-y-2">
-            <div className="skeleton h-3 w-20 rounded-lg" />
-            <div className="skeleton h-5 w-32 rounded-lg" />
-          </div>
-        </div>
-        <BalanceCardSkeleton />
-        <div className="grid grid-cols-2 gap-3">
-          <div className="skeleton h-16 rounded-xl" />
-          <div className="skeleton h-16 rounded-xl" />
-        </div>
-        <div className="space-y-2">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <TransactionRowSkeleton key={i} />
-          ))}
-        </div>
-      </div>
-    );
+  // Removed global loading block to allow granular skeleton loading
+
 
   return (
     <div
@@ -310,15 +296,15 @@ export default function Dashboard() {
       onTouchEnd={onTouchEnd}
     >
       {/* Pull-to-refresh indicator */}
-      {(pullDistance > 0 || refreshing) && (
+      {(pullDistance > 0 || pullRefreshing) && (
         <div
           className="flex justify-center items-center transition-all duration-150"
-          style={{ height: refreshing ? 40 : pullDistance, overflow: 'hidden' }}
+          style={{ height: pullRefreshing ? 40 : pullDistance, overflow: 'hidden' }}
         >
           <RefreshCw
             size={20}
-            className={`text-primary-400 transition-transform ${refreshing ? 'animate-spin' : ''}`}
-            style={{ transform: refreshing ? undefined : `rotate(${(pullDistance / 80) * 360}deg)` }}
+            className={`text-primary-400 transition-transform ${pullRefreshing ? 'animate-spin' : ''}`}
+            style={{ transform: pullRefreshing ? undefined : `rotate(${(pullDistance / 80) * 360}deg)` }}
           />
         </div>
       )}
@@ -403,6 +389,14 @@ export default function Dashboard() {
           >
             <X size={16} />
           </button>
+      {/* Offline Queue Indicator */}
+      {!isOnline && queueCount > 0 && (
+        <div className="flex items-center justify-between bg-primary-500/10 border border-primary-500/30 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-3 text-primary-400 text-sm">
+            <Clock size={16} />
+            <span>{queueCount} payment{queueCount !== 1 ? 's' : ''} queued offline</span>
+          </div>
+          <p className="text-[10px] text-primary-500/70 font-medium uppercase tracking-wider">Pending Sync</p>
         </div>
       )}
 
@@ -557,6 +551,9 @@ export default function Dashboard() {
       </div>
 
       {/* Balance Card */}
+      {loading ? (
+        <BalanceCardSkeleton />
+      ) : (
       <div
         className={`bg-gradient-to-br from-primary-600 to-primary-700 rounded-2xl p-5 shadow-lg shadow-primary-500/20 transition-all duration-500 ${balanceIncreased ? 'ring-4 ring-green-400 ring-opacity-50' : ''
           }`}
@@ -654,6 +651,7 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+      )}
 
       {/* All wallets balance summary (when user has more than one) */}
       {wallets.length > 1 && (
