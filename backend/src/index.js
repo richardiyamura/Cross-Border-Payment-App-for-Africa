@@ -102,6 +102,7 @@ io.on('connection', async (socket) => {
 });
 
 ledgerListener.setSocketIO(io);
+ledgerListener.initStreams();
 
 async function shutdown(signal) {
   logger.info(`${signal} received — shutting down gracefully`);
