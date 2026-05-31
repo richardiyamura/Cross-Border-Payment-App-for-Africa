@@ -35,6 +35,7 @@ const disputeRoutes = require('./routes/disputes');
 const pricesRoutes = require('./routes/prices');
 const channelsRoutes = require('./routes/channels');
 const contractsRoutes = require('./routes/contracts');
+const ledgerRoutes = require('./routes/ledger');
 const ipAllowlist = require('./middleware/ipAllowlist');
 const geoRestriction = require('./middleware/geoRestriction');
 
@@ -103,6 +104,7 @@ app.use('/api/admin', ipAllowlist, adminRoutes);
 app.use('/api/prices', pricesRoutes);
 app.use('/api/channels', channelsRoutes);
 app.use('/api/contracts', contractsRoutes);
+app.use('/api/ledger', ledgerRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/tools', toolsRoutes);
 app.use('/api/dev', toolsRoutes); // legacy alias
