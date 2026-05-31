@@ -817,6 +817,7 @@ async function getActivity(req, res, next) {
   }
 }
 
+module.exports = { register, login, verifyEmail, getMe, setPIN, verifyPIN };
 module.exports = {
   register,
   login,
