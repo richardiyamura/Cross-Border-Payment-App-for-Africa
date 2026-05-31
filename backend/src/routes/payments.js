@@ -1,4 +1,5 @@
 const router = require("express").Router();
+﻿const router = require("express").Router();
 const { body, query, validationResult } = require("express-validator");
 const StellarSdk = require("@stellar/stellar-sdk");
 const authMiddleware = require("../middleware/auth");
@@ -49,21 +50,8 @@ const validate = (req, res, next) => {
 
 router.use(authMiddleware);
 
-router.get('/estimate-fee', estimateFee);
-router.get('/fee-stats', getFeeStats);
-
-/**
- * POST /api/payments/send
- * @protected @idempotent
- * Idempotency-Key header prevents duplicate payments on client retry.
- */
-router.post('/send', paymentSendValidators, validate, idempotency, send);
-
-/**
- * POST /api/payments/batch
- * @protected @idempotent
- */
-router.post('/batch', paymentBatchValidators, validate, idempotency, sendBatch);
+router.get("/estimate-fee", estimateFee);
+router.get("/fee-stats", getFeeStats);
 
 // Federation address resolution
 router.get(
@@ -96,6 +84,26 @@ router.get(
 );
 
 /**
+ * POST /api/payments/send
+ * @protected @idempotent
+ * Idempotency-Key header prevents duplicate payments on client retry.
+ * Closes #492
+ */
+router.post(
+  "/send",
+  paymentSendValidators,
+  validate,
+  idempotency,
+  send,
+);
+
+/**
+ * POST /api/payments/batch
+ * @protected @idempotent
+ */
+router.post("/batch", paymentBatchValidators, validate, idempotency, sendBatch);
+
+/**
  * @swagger
  * /api/payments/history:
  *   get:
@@ -110,7 +118,7 @@ router.get(
  *           type: string
  *           enum: [sent, received, all]
  *           default: all
- *         description: Filter by transaction direction. Translated to a SQL WHERE clause on sender_wallet or recipient_wallet.
+ *         description: Filter by transaction direction.
  *       - in: query
  *         name: from
  *         schema:
@@ -147,7 +155,7 @@ router.get(
  *         description: Invalid query parameters
  */
 router.get(
-  '/history',
+  "/history",
   [
     query('page').optional().isInt({ min: 1 }).withMessage('page must be a positive integer'),
     query("limit").optional().isInt({ min: 1, max: 100 }).withMessage("limit must be between 1 and 100"),
@@ -191,6 +199,7 @@ router.post(
  * @protected @idempotent
  * Idempotency-Key header prevents duplicate path payments on client retry
  * (e.g. network timeout causing the client to resend the same request).
+ * Closes #493
  */
 router.post(
   "/send-path",
@@ -278,7 +287,7 @@ router.post(
 );
 
 // User-specific analytics (accessible to all authenticated users)
-const { summary: userAnalyticsSummary } = require('../controllers/analyticsController');
-router.get('/analytics', userAnalyticsSummary);
+const { summary: userAnalyticsSummary } = require("../controllers/analyticsController");
+router.get("/analytics", userAnalyticsSummary);
 
 module.exports = router;
