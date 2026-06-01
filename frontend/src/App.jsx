@@ -26,6 +26,7 @@ import BatchPayment from "./pages/BatchPayment";
 import Webhooks from "./pages/Webhooks";
 import Referrals from "./pages/Referrals";
 import Sessions from "./pages/Sessions";
+import Escrow from "./pages/Escrow";
 import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -116,6 +117,7 @@ function AppRoutes() {
           <Route path="business" element={<BusinessSettings />} />
           <Route path="swap" element={<Swap />} />
           <Route path="referrals" element={<Referrals />} />
+          <Route path="escrow" element={<Escrow />} />
         </Route>
       </Routes>
     </ErrorBoundary>
