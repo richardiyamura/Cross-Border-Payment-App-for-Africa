@@ -41,8 +41,54 @@ pub struct EscrowCancelled {
 
 #[derive(Clone)]
 #[contracttype]
+pub struct DeliveryConfirmed {
+    pub escrow_id: u64,
+    pub agent: Address,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct PartialRelease {
+    pub escrow_id: u64,
+    pub released_amount: i128,
+    pub remaining_amount: i128,
+    pub fee_amount: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct EscrowArchived {
+    pub escrow_id: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
 pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
+}
+
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct FeesWithdrawn {
+    pub admin: Address,
+    pub amount: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct FeeUpdated {
+    pub escrow_id: u64,
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct EscrowDeposited {
+    pub escrow_id: u64,
+    pub depositor: Address,
+    pub amount: i128,
+    pub new_total: i128,
 }
 
 #[derive(Clone)]
@@ -55,7 +101,9 @@ pub struct Escrow {
     pub amount: i128,
     pub release_fee_bps: u32,
     pub status: EscrowStatus,
+    pub payout_confirmed: bool,
     pub created_at: u64,
+    pub updated_at: u64,
     pub expires_at: u64,
 }
 
@@ -73,10 +121,12 @@ pub enum DataKey {
     UsdcAddress,
     EscrowCounter,
     AccumulatedFees,
+    RetentionPeriodSecs,
     Escrow(u64),
 }
 
 const DEFAULT_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60;
+const DEFAULT_RETENTION_SECS: u64 = 90 * 24 * 60 * 60;
 
 /// Maximum allowed fee: 50% (5000 bps). Configurable by admin via contract upgrade.
 const MAX_FEE_BPS: u32 = 5000;
@@ -84,11 +134,39 @@ const MAX_FEE_BPS: u32 = 5000;
 /// Minimum escrow amount in stroops to prevent integer-division rounding to zero fee.
 const MIN_ESCROW_AMOUNT: i128 = 100;
 
+fn require_admin(env: &Env, admin: &Address) {
+    admin.require_auth();
+    let stored_admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .expect("Contract not initialized");
+    if admin != &stored_admin {
+        panic!("Only admin can perform this action");
+    }
+}
+
+fn retention_period(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RetentionPeriodSecs)
+        .unwrap_or(DEFAULT_RETENTION_SECS)
+}
+
 #[contract]
 pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
+    /// Initialize the escrow contract.
+    ///
+    /// SECURITY — front-running prevention (#336):
+    /// This function must be called in the same transaction as deployment, or
+    /// immediately after deployment with no manual steps in between. The deploy
+    /// script (`contracts/deploy.sh`) handles this automatically.
+    ///
+    /// Re-initialization is permanently blocked by the `has(Admin)` guard.
+    /// There is no mechanism to change the admin after initialization.
     pub fn initialize(env: Env, admin: Address, usdc_address: Address) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic!("Contract already initialized");
@@ -169,7 +247,9 @@ impl EscrowContract {
             .persistent()
             .get(&DataKey::EscrowCounter)
             .unwrap_or(0);
-        let next_id = current_id + 1;
+        // u64::MAX is 18,446,744,073,709,551,615. At one escrow per second,
+        // exhausting the counter would take ~584 billion years.
+        let next_id = current_id.checked_add(1).expect("Escrow counter overflow");
         env.storage()
             .persistent()
             .set(&DataKey::EscrowCounter, &next_id);
@@ -183,7 +263,9 @@ impl EscrowContract {
             amount,
             release_fee_bps,
             status: EscrowStatus::Pending,
+            payout_confirmed: false,
             created_at: now,
+            updated_at: now,
             expires_at: now + DEFAULT_EXPIRY_SECS,
         };
         env.storage()
@@ -242,6 +324,16 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events().publish(
+            (Symbol::new(&env, "EscrowDeposited"),),
+            EscrowDeposited {
+                escrow_id,
+                depositor: sender,
+                amount,
+                new_total: escrow.amount,
+            },
+        );
     }
 
     pub fn release_escrow(env: Env, agent: Address, escrow_id: u64) {
@@ -258,6 +350,11 @@ impl EscrowContract {
         }
         if escrow.status != EscrowStatus::Pending {
             panic!("Escrow is not in pending state");
+        }
+        // Expiry guard: expired escrows must be cancelled by the sender via
+        // cancel_escrow — the agent cannot release funds after the protection window.
+        if env.ledger().timestamp() >= escrow.expires_at {
+            panic!("Escrow has expired");
         }
 
         let fee_amount = (escrow.amount * escrow.release_fee_bps as i128) / 10000;
@@ -285,6 +382,7 @@ impl EscrowContract {
             .set(&DataKey::AccumulatedFees, &(current_fees + fee_amount));
 
         escrow.status = EscrowStatus::Released;
+        escrow.updated_at = env.ledger().timestamp();
         env.storage()
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
@@ -299,14 +397,45 @@ impl EscrowContract {
         );
     }
 
-    /// Release a partial amount from a pending escrow. Useful for milestone-based
-    /// payments where the agent confirms delivery in stages. The escrow remains
-    /// Pending until explicitly fully released or cancelled.
-    pub fn partial_release(env: Env, agent: Address, escrow_id: u64, release_amount: i128) {
+    pub fn confirm_delivery(env: Env, agent: Address, escrow_id: u64) {
         agent.require_auth();
 
-        if release_amount <= 0 {
-            panic!("Release amount must be positive");
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("Escrow {} not found", escrow_id));
+
+        if agent != escrow.agent {
+            panic!("Only the agent can confirm delivery");
+        }
+        if escrow.status != EscrowStatus::Pending {
+            panic!("Escrow is not in pending state");
+        }
+        if escrow.payout_confirmed {
+            panic!("Delivery has already been confirmed");
+        }
+
+        escrow.payout_confirmed = true;
+        escrow.updated_at = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events().publish(
+            (Symbol::new(&env, "DeliveryConfirmed"),),
+            DeliveryConfirmed {
+                escrow_id,
+                agent,
+            },
+        );
+    }
+
+    pub fn partial_release(env: Env, agent: Address, escrow_id: u64, amount: i128) {
+        agent.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
         }
 
         let mut escrow: Escrow = env
@@ -321,12 +450,12 @@ impl EscrowContract {
         if escrow.status != EscrowStatus::Pending {
             panic!("Escrow is not in pending state");
         }
-        if release_amount > escrow.amount {
+        if amount > escrow.amount {
             panic!("Release amount exceeds escrow balance");
         }
 
-        let fee_amount = (release_amount * escrow.release_fee_bps as i128) / 10000;
-        let agent_amount = release_amount - fee_amount;
+        let fee_amount = (amount * escrow.release_fee_bps as i128) / 10000;
+        let agent_amount = amount - fee_amount;
 
         let usdc_address: Address = env
             .storage()
@@ -349,20 +478,60 @@ impl EscrowContract {
             .persistent()
             .set(&DataKey::AccumulatedFees, &(current_fees + fee_amount));
 
-        escrow.amount -= release_amount;
+        escrow.amount -= amount;
+        if escrow.amount == 0 {
+            escrow.status = EscrowStatus::Released;
+        }
+        escrow.updated_at = env.ledger().timestamp();
         env.storage()
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
 
         env.events().publish(
-            (Symbol::new(&env, "EscrowPartiallyReleased"),),
-            EscrowPartiallyReleased {
+            (Symbol::new(&env, "PartialRelease"),),
+            PartialRelease {
                 escrow_id,
-                released_amount: release_amount,
-                agent_amount,
-                fee_amount,
+                released_amount: amount,
                 remaining_amount: escrow.amount,
+                fee_amount,
             },
+        );
+    }
+
+    pub fn set_retention_period(env: Env, admin: Address, retention_secs: u64) {
+        require_admin(&env, &admin);
+        if retention_secs == 0 {
+            panic!("Retention period must be positive");
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::RetentionPeriodSecs, &retention_secs);
+    }
+
+    pub fn cleanup_escrow(env: Env, admin: Address, escrow_id: u64) {
+        require_admin(&env, &admin);
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("Escrow {} not found", escrow_id));
+
+        if escrow.status != EscrowStatus::Released && escrow.status != EscrowStatus::Cancelled {
+            panic!("Only released or cancelled escrows can be cleaned up");
+        }
+
+        let retention = retention_period(&env);
+        let now = env.ledger().timestamp();
+        if now < escrow.updated_at + retention {
+            panic!("Escrow retention period has not elapsed");
+        }
+
+        env.storage().persistent().remove(&DataKey::Escrow(escrow_id));
+
+        env.events().publish(
+            (Symbol::new(&env, "EscrowArchived"),),
+            EscrowArchived { escrow_id },
         );
     }
 
@@ -381,6 +550,9 @@ impl EscrowContract {
         if escrow.status != EscrowStatus::Pending {
             panic!("Escrow is not in pending state");
         }
+        if escrow.payout_confirmed {
+            panic!("Cannot cancel: agent has confirmed delivery");
+        }
 
         let usdc_address: Address = env
             .storage()
@@ -395,6 +567,7 @@ impl EscrowContract {
         );
 
         escrow.status = EscrowStatus::Cancelled;
+        escrow.updated_at = env.ledger().timestamp();
         env.storage()
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
@@ -464,6 +637,66 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .set(&DataKey::AccumulatedFees, &(current_fees - amount));
+
+        env.events().publish(
+            (Symbol::new(&env, "FeesWithdrawn"),),
+            FeesWithdrawn {
+                admin: admin.clone(),
+                amount,
+            },
+        );
+    }
+
+    /// Update the fee for an escrow. Only the contract admin can call this.
+    ///
+    /// The escrow must be in Pending status. Emits a FeeUpdated event with the
+    /// old and new fee values.
+    ///
+    /// # Arguments
+    /// * `admin`       — Must match the admin set during `initialize`.
+    /// * `escrow_id`   — ID of the escrow to update.
+    /// * `new_fee_bps` — New fee in basis points (0–5000).
+    pub fn update_fee(env: Env, admin: Address, escrow_id: u64, new_fee_bps: u32) {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized");
+
+        if admin != stored_admin {
+            panic!("Only admin can update escrow fees");
+        }
+
+        if new_fee_bps > MAX_FEE_BPS {
+            panic!("New fee exceeds maximum of 5000 bps (50%)");
+        }
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("Escrow {} not found", escrow_id));
+
+        if escrow.status != EscrowStatus::Pending {
+            panic!("Escrow is not in pending state");
+        }
+
+        let old_fee_bps = escrow.release_fee_bps;
+        escrow.release_fee_bps = new_fee_bps;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events().publish(
+            (Symbol::new(&env, "FeeUpdated"),),
+            FeeUpdated {
+                escrow_id,
+                old_fee_bps,
+                new_fee_bps,
+            },
+        );
     }
 
     pub fn get_metadata(env: Env) -> (Address, Address) {
