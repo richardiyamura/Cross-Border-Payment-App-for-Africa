@@ -3,6 +3,9 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, 
 
 mod test;
 
+/// Semantic version of this contract. Bumped on every upgrade.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[derive(Clone)]
 #[contracttype]
 pub struct EscrowCreated {
@@ -33,6 +36,7 @@ pub struct EscrowCancelled {
 #[contracttype]
 pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
+    pub contract_version: u32,
 }
 
 #[derive(Clone)]
@@ -115,7 +119,10 @@ impl EscrowContract {
 
         env.events().publish(
             (Symbol::new(&env, "Upgraded"),),
-            Upgraded { new_wasm_hash },
+            Upgraded {
+                new_wasm_hash,
+                contract_version: CONTRACT_VERSION,
+            },
         );
     }
 
@@ -356,7 +363,6 @@ impl EscrowContract {
             .storage()
             .persistent()
             .get(&DataKey::Admin)
-            .unwrap();
             .expect("Contract not initialized");
 
         if admin != stored_admin {
@@ -377,7 +383,6 @@ impl EscrowContract {
             .storage()
             .persistent()
             .get(&DataKey::UsdcAddress)
-            .unwrap();
             .expect("Contract not initialized");
 
         token::Client::new(&env, &usdc_address).transfer(
@@ -392,7 +397,6 @@ impl EscrowContract {
     }
 
     pub fn get_metadata(env: Env) -> (Address, Address) {
-        let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
         let admin: Address = env
             .storage()
             .persistent()
@@ -402,7 +406,6 @@ impl EscrowContract {
             .storage()
             .persistent()
             .get(&DataKey::UsdcAddress)
-            .unwrap();
             .expect("Contract not initialized");
         (admin, usdc_address)
     }
