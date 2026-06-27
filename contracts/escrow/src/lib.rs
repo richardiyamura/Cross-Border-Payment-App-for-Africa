@@ -27,6 +27,16 @@ pub struct EscrowReleased {
 
 #[derive(Clone)]
 #[contracttype]
+pub struct EscrowPartiallyReleased {
+    pub escrow_id: u64,
+    pub released_amount: i128,
+    pub agent_amount: i128,
+    pub fee_amount: i128,
+    pub remaining_amount: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
 pub struct EscrowCancelled {
     pub escrow_id: u64,
     pub refund_amount: i128,
