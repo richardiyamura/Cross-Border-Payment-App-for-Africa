@@ -113,6 +113,7 @@ export default function Dashboard() {
   const wallet = wallets.find((w) => w.id === activeWalletId) || wallets[0] || null;
 
   const [transactions, setTransactions] = useState([]);
+  const [txError, setTxError] = useState(false);
   const [scheduledPayments, setScheduledPayments] = useState([]);
   const [scheduledLoading, setScheduledLoading] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -209,6 +210,7 @@ export default function Dashboard() {
       setWallets(walletsData);
       setActiveWalletId((id) => id || walletsData[0]?.id || null);
       setTransactions(txData.slice(0, 5));
+      setTxError(false);
       setScheduledPayments((scheduledRes.data.payments || []).filter((p) => p.active).slice(0, 3));
       setScheduledLoading(false);
       setFromCache(false);
@@ -232,6 +234,9 @@ export default function Dashboard() {
         }
         if (cachedHistory?.data) {
           setTransactions(cachedHistory.data.slice(0, 5));
+          setTxError(false);
+        } else {
+          setTxError(true);
           setTransactionsError(false);
         } else {
           setTransactionsError(true);
@@ -980,6 +985,20 @@ export default function Dashboard() {
           </button>
         </div>
 
+        {loading ? (
+          <div className="space-y-2" aria-busy="true" aria-label="Loading transactions">
+            <TransactionRowSkeleton />
+            <TransactionRowSkeleton />
+            <TransactionRowSkeleton />
+          </div>
+        ) : txError ? (
+          <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-6 text-center text-sm shadow-sm">
+            <p className="text-gray-500 mb-3">Failed to load transactions.</p>
+            <button
+              onClick={() => loadDashboard(false)}
+              className="text-primary-500 font-medium hover:underline"
+            >
+              {t('common.retry')}
         {loading && transactions.length === 0 ? (
           <div className="space-y-2" data-testid="transactions-skeleton" aria-hidden="true">
             {[0, 1, 2].map((i) => (
